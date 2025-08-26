@@ -313,6 +313,7 @@ class DiTBlock(nn.Module):
                 self.norm2(hidden_states),
                 encoder_hidden_states=encoder_hidden_states,
                 image_rotary_emb=image_rotary_emb,
+                # num_parts=attention_kwargs.get("num_parts", None),
                 **attention_kwargs,
             )
 
@@ -641,9 +642,9 @@ class PartCrafterDiTModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
 
         if attention_kwargs is not None:
             attention_kwargs = attention_kwargs.copy()
-            lora_scale = attention_kwargs.pop("scale", 1.0)
+            lora_scale = attention_kwargs.pop("scale", 1.0) # lora scale can adjust the strength of the lora layer
         else:
-            lora_scale = 1.0
+            lora_scale = 1.0 
 
         if USE_PEFT_BACKEND:
             # weight the lora layers by setting `lora_scale` for each PEFT layer
@@ -663,14 +664,19 @@ class PartCrafterDiTModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         temb = self.time_proj(temb)
         temb = temb.unsqueeze(dim=1)  # unsqueeze to concat with hidden_states
 
-        hidden_states = self.proj_in(hidden_states)
+        hidden_states = self.proj_in(hidden_states) 
 
         # T + 1 token
         hidden_states = torch.cat([temb, hidden_states], dim=1) # (N, T+1, D)
 
         if self.enable_part_embedding:
             # Add part embedding
-            num_parts = attention_kwargs["num_parts"]
+            if attention_kwargs is None or "num_parts" not in attention_kwargs:
+                # Use batch size as num_parts if not provided
+                num_parts = hidden_states.shape[0]
+            else:
+                num_parts = attention_kwargs["num_parts"]
+            
             if isinstance(num_parts, torch.Tensor):
                 part_embeddings = []
                 for num_part in num_parts:
@@ -689,7 +695,7 @@ class PartCrafterDiTModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         negative_encoder_hidden_states = torch.zeros_like(encoder_hidden_states) if encoder_hidden_states is not None else None
 
         skips = []
-        for layer, block in enumerate(self.blocks):
+        for layer, block in enumerate(self.blocks):  ## Traverse all DiT Blocks
             skip = None if layer <= self.config.num_layers // 2 else skips.pop()
             if (
                 (not self.enable_local_cross_attn) 
@@ -714,7 +720,11 @@ class PartCrafterDiTModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
                 # Inject control signal into global attention block
                 input_attention_kwargs = attention_kwargs
             else:
-                input_attention_kwargs = None
+                # For non-global attention blocks, still pass num_parts if available
+                if attention_kwargs is not None and "num_parts" in attention_kwargs:
+                    input_attention_kwargs = {"num_parts": attention_kwargs["num_parts"]}
+                else:
+                    input_attention_kwargs = None
 
             if self.training and self.gradient_checkpointing:
 
@@ -738,7 +748,7 @@ class PartCrafterDiTModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
                     **ckpt_kwargs,
                 )
             else:
-                hidden_states = block(
+                hidden_states = block(  ## Block is a DiTBlock
                     hidden_states,
                     encoder_hidden_states=input_encoder_hidden_states,
                     temb=temb,

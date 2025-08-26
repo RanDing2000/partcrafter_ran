@@ -11,7 +11,8 @@ import trimesh
 from huggingface_hub import snapshot_download
 from PIL import Image
 from accelerate.utils import set_seed
-
+import sys
+sys.path.append('/home/ran.ding/messy-kitchen/PartCrafter')
 from src.utils.data_utils import get_colored_mesh_composition
 from src.utils.render_utils import render_views_around_mesh, render_normal_views_around_mesh, make_grid_for_images_or_videos, export_renderings
 from src.pipelines.pipeline_partcrafter import PartCrafterPipeline

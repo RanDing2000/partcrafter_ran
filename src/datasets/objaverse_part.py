@@ -13,6 +13,167 @@ from tqdm import tqdm
 
 from src.utils.data_utils import load_surface, load_surfaces
 
+import numpy as np
+import torch
+from pathlib import Path
+
+import numpy as np
+import open3d as o3d
+import imageio
+
+import numpy as np
+import torch
+import open3d as o3d
+import imageio
+
+def color_parts(source):
+    """
+    source: [N,P,6] numpy / tensor / [P,6]
+    返回合并后的带颜色的 open3d PointCloud
+    """
+    if torch.is_tensor(source):
+        arr = source.detach().cpu().numpy().astype(np.float32)
+    else:
+        arr = np.asarray(source, dtype=np.float32)
+
+    if arr.ndim == 2:  # [P,6] → [1,P,6]
+        arr = arr[None, ...]
+    N, P, D = arr.shape
+
+    rng = np.random.default_rng(42)
+    colors = rng.random((N, 3))  # 每个 part 一种随机颜色
+
+    all_points, all_colors = [], []
+    for i in range(N):
+        xyz = arr[i, :, :3]
+        col = np.tile(colors[i], (xyz.shape[0], 1))
+        all_points.append(xyz)
+        all_colors.append(col)
+
+    all_points = np.vstack(all_points)
+    all_colors = np.vstack(all_colors)
+
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(all_points)
+    pcd.colors = o3d.utility.Vector3dVector(all_colors)
+    return pcd
+
+def render_parts_to_gif(source, gif_path="rotation.gif", n_frames=60, width=800, height=800):
+    pcd = color_parts(source)
+
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(visible=False, width=width, height=height)
+    vis.add_geometry(pcd)
+
+    images = []
+    for i in range(n_frames):
+        # 每一帧旋转 360/n_frames 度 (绕 Y 轴)
+        R = pcd.get_rotation_matrix_from_axis_angle([0, 2*np.pi/n_frames, 0])
+        pcd.rotate(R, center=(0,0,0))
+
+        vis.update_geometry(pcd)
+        vis.poll_events()
+        vis.update_renderer()
+
+        img = vis.capture_screen_float_buffer(do_render=True)
+        img = (255 * np.asarray(img)).astype(np.uint8)
+        images.append(img)
+
+    vis.destroy_window()
+    imageio.mimsave(gif_path, images, fps=15)
+
+
+
+def render_ply_to_gif(ply_path, gif_path="rotation.gif", n_frames=60, width=800, height=800):
+    # 读取点云
+    pcd = o3d.io.read_point_cloud(ply_path)
+
+    vis = o3d.visualization.Visualizer()
+    vis.create_window(visible=False, width=width, height=height)
+    vis.add_geometry(pcd)
+
+    ctr = vis.get_view_control()
+    param = ctr.convert_to_pinhole_camera_parameters()
+
+    images = []
+    for i in range(n_frames):
+        # 每一帧旋转 360/n_frames 度
+        R = pcd.get_rotation_matrix_from_axis_angle([0, 2*np.pi/n_frames, 0])  # 绕y轴旋转
+        pcd.rotate(R, center=(0,0,0))
+        
+        vis.update_geometry(pcd)
+        vis.poll_events()
+        vis.update_renderer()
+
+        # 截图
+        img = vis.capture_screen_float_buffer(do_render=True)
+        img = (255 * np.asarray(img)).astype(np.uint8)
+        images.append(img)
+
+    vis.destroy_window()
+
+    # 保存为 gif
+    imageio.mimsave(gif_path, images, fps=15)
+
+def save_all_parts_to_colored_ply(source, ply_path, num_samples=1024):
+    """
+    source: np.ndarray / torch.Tensor / str (path to .npy)
+            shape: [N, P, 6] or [P, 6]
+            where last dim = [x,y,z,(nx,ny,nz)]
+    ply_path: output PLY file
+    num_samples: 每个 part 采样的点数
+    """
+
+    # Load
+    if isinstance(source, (str, Path)):
+        npy = np.load(source, allow_pickle=True).item()
+        parts = npy.get("parts", [])
+        parts = parts if (isinstance(parts, (list, tuple)) and len(parts) > 0) else [npy["object"]]
+        arr = np.asarray(parts, dtype=np.float32)
+    elif torch.is_tensor(source):
+        arr = source.detach().cpu().numpy().astype(np.float32)
+    else:
+        arr = np.asarray(source, dtype=np.float32)
+
+    # Normalize shape
+    if arr.ndim == 2:  # [P,6] → [1,P,6]
+        arr = arr[None, ...]
+    N, P, D = arr.shape
+
+    rng = np.random.default_rng(42)  # 固定随机种子，保证可复现
+
+    # Write PLY header
+    total_vertices = N * num_samples
+    with open(ply_path, "w") as f:
+        f.write("ply\n")
+        f.write("format ascii 1.0\n")
+        f.write(f"element vertex {total_vertices}\n")
+        f.write("property float x\n")
+        f.write("property float y\n")
+        f.write("property float z\n")
+        f.write("property uchar red\n")
+        f.write("property uchar green\n")
+        f.write("property uchar blue\n")
+        f.write("end_header\n")
+
+        # 给每个 part 随机一个颜色
+        colors = rng.integers(0, 255, size=(N, 3))
+
+        for i in range(N):
+            xyz = arr[i, :, :3]
+            # 随机采样
+            if xyz.shape[0] > num_samples:
+                idx = rng.choice(xyz.shape[0], size=num_samples, replace=False)
+                xyz = xyz[idx]
+            elif xyz.shape[0] < num_samples:
+                idx = rng.choice(xyz.shape[0], size=num_samples, replace=True)
+                xyz = xyz[idx]
+            # 写入
+            color = colors[i]
+            for p in xyz:
+                f.write(f"{p[0]} {p[1]} {p[2]} {color[0]} {color[1]} {color[2]}\n")
+
+
 class ObjaversePartDataset(torch.utils.data.Dataset):
     def __init__(
         self, 
@@ -93,6 +254,11 @@ class ObjaversePartDataset(torch.utils.data.Dataset):
         image = np.array(image)
         image = torch.from_numpy(image).to(torch.uint8) # [H, W, 3]
         images = torch.stack([image] * part_surfaces.shape[0], dim=0) # [N, H, W, 3]
+
+        save_all_parts_to_colored_ply(part_surfaces, 'demo2.ply', num_samples=20000)
+        img = images[0].cpu().numpy().astype(np.uint8)
+        imageio.imwrite("demo2_image.png", img)
+        # render_parts_to_gif(part_surfaces, gif_path="colored_parts.gif", n_frames=60)
         return {
             "images": images,
             "part_surfaces": part_surfaces,

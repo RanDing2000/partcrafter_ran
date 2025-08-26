@@ -198,6 +198,8 @@ def main():
         default=None,
         help="Tag of a pretrained PartCrafterDiTModel in this project"
     )
+    
+    # (Removed) Attention visualization arguments in training
     parser.add_argument(
         "--load_pretrained_model_ckpt",
         type=int,
@@ -287,6 +289,7 @@ def main():
     )
     train_loader = MultiEpochsDataLoader(
         train_dataset,
+        # val_dataset,
         batch_size=configs["train"]["batch_size_per_gpu"],
         num_workers=args.num_workers,
         drop_last=True,
@@ -294,7 +297,7 @@ def main():
         collate_fn=train_dataset.collate_fn,
     )
     val_loader = MultiEpochsDataLoader(
-        val_dataset,
+       val_dataset,
         batch_size=configs["val"]["batch_size_per_gpu"],
         num_workers=args.num_workers,
         drop_last=True,
@@ -597,6 +600,8 @@ def main():
             sigma = sigma.unsqueeze(-1)
         return sigma
 
+    # (Removed) training-time attention visualization init
+    
     # Start training
     if accelerator.is_main_process:
         print()
@@ -673,6 +678,8 @@ def main():
                 encoder_hidden_states=image_embeds, 
                 attention_kwargs={"num_parts": num_parts}
             ).sample
+            
+            # (Removed) Attention visualization during training
 
             if configs["train"]["training_objective"] == "x0":  # Section 5 of https://arxiv.org/abs/2206.00364
                 model_pred = model_pred * (-sigmas) + noisy_latents  # predicted x_0

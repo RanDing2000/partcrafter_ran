@@ -1,7 +1,7 @@
 model:
   pretrained_model_name_or_path: 'pretrained_weights/TripoSG'
   vae:
-    num_tokens: 1024
+    num_tokens: 512
   transformer:
     enable_local_cross_attn: true
     global_attn_block_ids: [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
@@ -10,12 +10,12 @@ model:
 
 dataset:
   config: 
-    - 'datasets/object_part_configs.json' # Modify this path if you use your own dataset
+    - 'datasets/1_11_objaverse_part_filtered_configs.json' # Modify this path if you use your own dataset
   training_ratio: 0.9
   min_num_parts: 1
-  max_num_parts: 16
-  max_iou_mean: 0.2
-  max_iou_max: 0.2
+  max_num_parts: 8
+  max_iou_mean: 0.5
+  max_iou_max: 0.5
   shuffle_parts: true
   object_ratio: 0.3
   rotating_ratio: 0.2
@@ -23,7 +23,7 @@ dataset:
 
 optimizer:
   name: "adamw"
-  lr: 5e-5
+  lr: 1e-4
   betas:
     - 0.9
     - 0.999
@@ -35,8 +35,8 @@ lr_scheduler:
   num_warmup_steps: 1000
 
 train:
-  batch_size_per_gpu: 2
-  epochs: 10
+  batch_size_per_gpu: 8
+  epochs: 200
   grad_checkpoint: true
   weighting_scheme: "logit_normal"
   logit_mean: 0.0

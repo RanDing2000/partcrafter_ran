@@ -196,9 +196,10 @@ class TripoSGAttnProcessor2_0:
         attention_mask: Optional[torch.Tensor] = None,
         temb: Optional[torch.Tensor] = None,
         image_rotary_emb: Optional[torch.Tensor] = None,
+        num_parts: Optional[Union[int, torch.Tensor]] = None,
     ) -> torch.Tensor:
         from diffusers.models.embeddings import apply_rotary_emb
-
+        # num_parts = 6
         residual = hidden_states
         if attn.spatial_norm is not None:
             hidden_states = attn.spatial_norm(hidden_states, temb)
@@ -447,9 +448,10 @@ class PartCrafterAttnProcessor:
         temb: Optional[torch.Tensor] = None,
         image_rotary_emb: Optional[torch.Tensor] = None,
         num_parts: Optional[Union[int, torch.Tensor]] = None,
+        **attention_kwargs,
     ) -> torch.Tensor:
         from diffusers.models.embeddings import apply_rotary_emb
-
+        # num_parts = 6
         residual = hidden_states
         if attn.spatial_norm is not None:
             hidden_states = attn.spatial_norm(hidden_states, temb)

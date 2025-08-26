@@ -67,6 +67,10 @@ Generate a 3D part-level object from an image:
 python scripts/inference_partcrafter.py \
   --image_path assets/images/np3_2f6ab901c5a84ed6bbdf85a67b22a2ee.png \
   --num_parts 3 --tag robot --render
+
+python scripts/inference_partcrafter.py \
+  --image_path assets/obj1.png \
+  --num_parts 2 --tag obj1 --render
 ```
 The required model weights will be automatically downloaded:
 - PartCrafter model from [wgsxm/PartCrafter](https://huggingface.co/wgsxm/PartCrafter) → pretrained_weights/PartCrafter
@@ -87,6 +91,11 @@ python scripts/inference_partcrafter_scene.py \
   --image_path assets/images_scene/np6_0192a842-531c-419a-923e-28db4add8656_DiningRoom-31158.png \
   --num_parts 6 --tag dining_room --render
 ```
+
+python scripts/inference_partcrafter_scene.py \
+  --image_path assets/real2.PNG \
+  --num_parts 8 --tag real2 --render
+
 The required model weights will be automatically downloaded:
 - PartCrafter-Scene model from [wgsxm/PartCrafter-Scene](https://huggingface.co/wgsxm/PartCrafter-Scene) → pretrained_weights/PartCrafter-Scene
 
@@ -99,6 +108,7 @@ A CUDA-enabled GPU with at least 8GB VRAM. You can reduce number of parts or num
 Please refer to [Dataset README](./datasets/README.md) to download and preprocess the dataset. To generate a minimal dataset, you can run:
 ```
 python datasets/preprocess/preprocess.py --input assets/objects --output preprocessed_data
+<!-- python datasets/preprocess/preprocess.py --input assets/messy_kitchen --output preprocessed_data_kitchen2 -->
 ```
 This script preprocesses GLB files in `./assets/objects` and saves the preprocessed data to `./preprocessed_data`. We provide a pseudo data configuration [here](./datasets/object_part_configs.json), which makes use of the minimal preprocessed data and is compatible with the training settings.
 

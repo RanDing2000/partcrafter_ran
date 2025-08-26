@@ -10,10 +10,10 @@ model:
 
 dataset:
   config: 
-    - 'datasets/object_part_configs_1_100_objaverse.json' # Modify this path if you use your own dataset
+    - 'datasets/messy_kitchen_configs/messy_kitchen_scenes_part1_configs.json' # Modify this path if you use your own dataset
   training_ratio: 0.9
   min_num_parts: 1
-  max_num_parts: 8
+  max_num_parts: 6
   max_iou_mean: 0.5
   max_iou_max: 0.5
   shuffle_parts: true
@@ -35,8 +35,8 @@ lr_scheduler:
   num_warmup_steps: 1000
 
 train:
-  batch_size_per_gpu: 2
-  epochs: 10
+  batch_size_per_gpu: 8
+  epochs: 200
   grad_checkpoint: true
   weighting_scheme: "logit_normal"
   logit_mean: 0.0

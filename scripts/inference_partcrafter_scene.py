@@ -10,11 +10,14 @@ import torch
 import trimesh
 from huggingface_hub import snapshot_download
 from PIL import Image
+# from PIL import Image
 from accelerate.utils import set_seed
-
+import sys
+sys.path.append('/home/ran.ding/messy-kitchen/PartCrafter')
 from src.utils.data_utils import get_colored_mesh_composition
 from src.utils.render_utils import render_views_around_mesh, render_normal_views_around_mesh, make_grid_for_images_or_videos, export_renderings
 from src.pipelines.pipeline_partcrafter import PartCrafterPipeline
+from src.utils.attention_visualization import AttentionVisualizer
 
 @torch.no_grad()
 def run_triposg(
@@ -69,6 +72,9 @@ if __name__ == "__main__":
     parser.add_argument("--max_num_expanded_coords", type=int, default=1e9)
     parser.add_argument("--use_flash_decoder", action="store_true")
     parser.add_argument("--render", action="store_true")
+    # Attention visualization during inference (test-only)
+    parser.add_argument("--attention_viz", action="store_true", help="Enable attention visualization and save PNGs in output dir")
+    parser.add_argument("--attention_viz_dir", type=str, default=None, help="Subdirectory to save attention PNGs (default: <output_dir>/<tag>/attention_viz)")
     args = parser.parse_args()
 
     assert 1 <= args.num_parts <= MAX_NUM_PARTS, f"num_parts must be in [1, {MAX_NUM_PARTS}]"
@@ -112,6 +118,49 @@ if __name__ == "__main__":
     merged_mesh = get_colored_mesh_composition(outputs)
     merged_mesh.export(os.path.join(export_dir, "object.glb"))
     print(f"Generated {len(outputs)} parts and saved to {export_dir}")
+
+    # ------------------------- Attention Visualization (Test Only) -------------------------
+    if args.attention_viz:
+        print("Creating attention visualizations (test-only)...")
+        viz_dir = args.attention_viz_dir or os.path.join(export_dir, "attention_viz")
+        os.makedirs(viz_dir, exist_ok=True)
+
+        # Build inputs for a single forward pass to extract attention weights
+        # 1) Encode image the same way as pipeline
+        image_embeds, uncond = pipe.encode_image([processed_image] * args.num_parts, device=pipe.device, num_images_per_prompt=1)
+        # No CFG here, only positive embeds of shape [num_parts, seq, dim]
+
+        # 2) Prepare a latent token tensor compatible with transformer
+        in_channels = pipe.transformer.config.in_channels
+        tokens = args.num_tokens
+        latent_model_input = torch.randn(args.num_parts, tokens, in_channels, device=pipe.device, dtype=image_embeds.dtype)
+
+        # 3) Pick a valid timestep tensor
+        if hasattr(pipe, "scheduler") and hasattr(pipe.scheduler, "timesteps") and len(pipe.scheduler.timesteps) > 0:
+            t = pipe.scheduler.timesteps[0]
+        else:
+            t = torch.tensor(0, device=pipe.device, dtype=torch.long)
+        timestep = torch.full((args.num_parts,), int(t), device=pipe.device, dtype=torch.long)
+
+        # 4) Run attention visualizer
+        visualizer = AttentionVisualizer()
+        try:
+            attention_kwargs = {"num_parts": args.num_parts}
+            attention_weights = visualizer.extract_attention_weights(
+                pipe.transformer, latent_model_input, image_embeds, timestep=timestep, attention_kwargs=attention_kwargs
+            )
+
+            # Save PNGs per layer
+            for layer_name, weights in attention_weights.items():
+                heatmap_path = os.path.join(viz_dir, f"{layer_name}_heatmap.png")
+                visualizer.visualize_attention_heatmap(weights, heatmap_path, title=f"Cross Attention - {layer_name}")
+
+                multihead_path = os.path.join(viz_dir, f"{layer_name}_multihead.png")
+                visualizer.visualize_multi_head_attention(weights, multihead_path, title=f"Multi-Head - {layer_name}")
+
+            print(f"Attention PNGs saved to: {viz_dir}")
+        except Exception as e:
+            print(f"[WARN] Failed to create attention PNGs: {e}")
 
     if args.render:
         print("Start rendering...")

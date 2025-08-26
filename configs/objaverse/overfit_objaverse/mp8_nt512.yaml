@@ -10,10 +10,10 @@ model:
 
 dataset:
   config: 
-    - 'datasets/object_part_configs_1_100_objaverse.json' # Modify this path if you use your own dataset
+    - 'datasets/overfit_objaverse_filtered_configs.json' # Modify this path if you use your own dataset
   training_ratio: 0.9
   min_num_parts: 1
-  max_num_parts: 16
+  max_num_parts: 8
   max_iou_mean: 0.5
   max_iou_max: 0.5
   shuffle_parts: true
@@ -23,7 +23,7 @@ dataset:
 
 optimizer:
   name: "adamw"
-  lr: 5e-5
+  lr: 1e-4
   betas:
     - 0.9
     - 0.999
