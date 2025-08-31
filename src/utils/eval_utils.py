@@ -220,13 +220,21 @@ def align_merged_meshes_with_gaps_and_get_transform(gt_merged: trimesh.Trimesh, 
             print(f"GT merged mesh: {len(gt_merged.vertices)} vertices, {len(gt_merged.faces)} faces")
             print(f"Pred merged mesh: {len(pred_merged.vertices)} vertices, {len(pred_merged.faces)} faces")
             
-            # Run GAPS alignment with verbose output to get transformation matrix
-            result = subprocess.run(
-                [gaps_path, "-v", "-icp_scale", pred_path, gt_path, aligned_pred_path],
-                capture_output=True,
-                text=True,
-                timeout=120  # Increased timeout for larger meshes
-            )
+            # Run GAPS alignment (pred -> gt) with verbose output to get transformation matrix
+            cmd = f"{gaps_path} {pred_path} {gt_path} {aligned_pred_path} -v"
+            print(f"Running GAPS command: {cmd}")
+            
+            try:
+                result = subprocess.run(
+                    cmd,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+            except subprocess.TimeoutExpired:
+                print("GAPS alignment timed out, using original meshes")
+                return gt_merged, pred_merged, np.eye(4), 1.0
             
             if result.returncode == 0 and os.path.exists(aligned_pred_path):
                 # Load aligned mesh (pred aligned to gt)
@@ -236,6 +244,19 @@ def align_merged_meshes_with_gaps_and_get_transform(gt_merged: trimesh.Trimesh, 
                 
                 # Parse transformation matrix and scale from GAPS output
                 transformation_matrix, scale_factor = parse_gaps_transformation(result.stdout)
+                
+                # If parsing failed, try to extract transformation from mesh comparison
+                if np.allclose(transformation_matrix, np.eye(4)) and scale_factor == 1.0:
+                    print("Warning: GAPS output parsing failed, attempting to extract transformation from mesh comparison")
+                    try:
+                        # Use ICP-like method to extract transformation from pred_merged to aligned_pred_merged
+                        transformation_matrix, scale_factor = extract_transformation_from_meshes(pred_merged, aligned_pred_merged)
+                        print(f"Extracted transformation from mesh comparison: scale={scale_factor}")
+                    except Exception as e:
+                        print(f"Failed to extract transformation from mesh comparison: {e}")
+                        print("Using identity transformation")
+                        transformation_matrix = np.eye(4)
+                        scale_factor = 1.0
                 
                 return gt_merged, aligned_pred_merged, transformation_matrix, scale_factor
             else:
@@ -411,17 +432,11 @@ def parse_gaps_transformation(gaps_output: str) -> Tuple[np.ndarray, float]:
 def compute_aligned_metrics(gt_meshes: List[trimesh.Trimesh], pred_meshes: List[trimesh.Trimesh], 
                           num_samples: int = 10000) -> Dict[str, Any]:
     """
-    Compute evaluation metrics for multi-object reconstruction with GAPS alignment
-    
-    Process:
-    1. Merge GT and predicted meshes separately
-    2. Apply sim(3) registration using GAPS (align predicted mesh to GT mesh)
-    3. Apply the transformation to individual predicted meshes
-    4. Compute per-object CD and IoU metrics
+    Compute evaluation metrics for multi-object reconstruction
     
     Args:
         gt_meshes: List of Ground Truth meshes (reference)
-        pred_meshes: List of predicted meshes (to be aligned)
+        pred_meshes: List of predicted meshes (already aligned if using GAPS)
         num_samples: Number of sample points for metric computation
         
     Returns:
@@ -430,9 +445,6 @@ def compute_aligned_metrics(gt_meshes: List[trimesh.Trimesh], pred_meshes: List[
     print(f"GT scene contains {len(gt_meshes)} objects")
     print(f"Predicted scene contains {len(pred_meshes)} objects")
     
-    # Filter out empty meshes
-    gt_meshes = [mesh for mesh in gt_meshes if mesh is not None and len(mesh.vertices) > 0]
-    pred_meshes = [mesh for mesh in pred_meshes if mesh is not None and len(mesh.vertices) > 0]
     
     if len(gt_meshes) == 0 or len(pred_meshes) == 0:
         print("Warning: No valid meshes found")
@@ -449,39 +461,8 @@ def compute_aligned_metrics(gt_meshes: List[trimesh.Trimesh], pred_meshes: List[
             'scene_iou': 0.0
         }
     
-    # Step 1: Merge GT and predicted meshes separately
-    print("Step 1: Merging GT and predicted meshes...")
-    if len(gt_meshes) > 1:
-        gt_merged = trimesh.util.concatenate(gt_meshes)
-    else:
-        gt_merged = gt_meshes[0]
-    
-    if len(pred_meshes) > 1:
-        pred_merged = trimesh.util.concatenate(pred_meshes)
-    else:
-        pred_merged = pred_meshes[0]
-    
-    print(f"GT merged mesh: {len(gt_merged.vertices)} vertices, {len(gt_merged.faces)} faces")
-    print(f"Pred merged mesh: {len(pred_merged.vertices)} vertices, {len(pred_merged.faces)} faces")
-    
-    # Step 2: Apply sim(3) registration using GAPS (align pred to gt) and get transformation
-    print("Step 2: Applying sim(3) registration using GAPS (aligning predicted mesh to GT mesh)...")
-    aligned_gt_merged, aligned_pred_merged, gaps_transformation_matrix, gaps_scale_factor = align_merged_meshes_with_gaps_and_get_transform(gt_merged, pred_merged)
-    
-    # Save aligned merged meshes for debugging
-    aligned_gt_merged.export("aligned_gt_merged.glb")
-    aligned_pred_merged.export("aligned_pred_merged.glb")
-    gt_merged.export("gt_merged.glb")
-    
-    # Save GAPS transformation matrix and scale factor
-    np.save("gaps_transformation_matrix.npy", gaps_transformation_matrix)
-    with open("gaps_scale_factor.txt", "w") as f:
-        f.write(f"{gaps_scale_factor}\n")
-    print(f"Saved GAPS transformation matrix and scale factor: {gaps_scale_factor}")
-    
-    # Step 3: Apply GAPS transformation to individual meshes
-    print("Step 3: Applying GAPS transformation to individual meshes...")
-    aligned_pred_meshes = apply_gaps_transformation_to_meshes(pred_meshes, gaps_transformation_matrix)
+    # Use the provided meshes directly (alignment already done in eval.py)
+    aligned_pred_meshes = pred_meshes
     
     # Step 4: Compute per-object metrics
     print("Step 4: Computing per-object metrics...")
@@ -506,8 +487,12 @@ def compute_aligned_metrics(gt_meshes: List[trimesh.Trimesh], pred_meshes: List[
 
                 # Compute F-score
                 fscore = compute_f_score(gt_mesh, pred_mesh, num_samples=num_samples//len(gt_meshes), threshold=0.1)
-                # Compute IoU
-                iou = compute_IoU(gt_mesh, pred_mesh, num_grids=32, scale=1.5)
+                # Compute IoU (using smaller grid for speed)
+                try:
+                    iou = compute_IoU(gt_mesh, pred_mesh, num_grids=16, scale=1.5)
+                except Exception as e:
+                    print(f"Error computing IoU: {e}")
+                    iou = 0.0
                 
                 if cd < best_cd:
                     best_cd = cd
@@ -564,11 +549,20 @@ def compute_aligned_metrics(gt_meshes: List[trimesh.Trimesh], pred_meshes: List[
     aligned_gt_scene = trimesh.Scene(gt_meshes)
     aligned_pred_scene = trimesh.Scene(aligned_pred_meshes)
     
-    # Store aligned scenes and merged meshes for later use
+    # Store aligned scenes for later use
     metrics['aligned_gt_scene'] = aligned_gt_scene
     metrics['aligned_pred_scene'] = aligned_pred_scene
-    metrics['aligned_gt_merged'] = aligned_gt_merged
-    metrics['aligned_pred_merged'] = aligned_pred_merged
+    
+    # Create merged meshes for compatibility
+    if len(gt_meshes) > 1:
+        metrics['aligned_gt_merged'] = trimesh.util.concatenate(gt_meshes)
+    else:
+        metrics['aligned_gt_merged'] = gt_meshes[0] if gt_meshes else None
+    
+    if len(aligned_pred_meshes) > 1:
+        metrics['aligned_pred_merged'] = trimesh.util.concatenate(aligned_pred_meshes)
+    else:
+        metrics['aligned_pred_merged'] = aligned_pred_meshes[0] if aligned_pred_meshes else None
     
     print(f"Final scene metrics: CD={metrics['chamfer_distance']:.6f}±{metrics['chamfer_distance_std']:.6f}, "
           f"F-score={metrics['f_score']:.6f}±{metrics['f_score_std']:.6f}, "
@@ -1075,3 +1069,39 @@ def apply_gaps_transformation_to_meshes(meshes: List[trimesh.Trimesh], transform
         print(f"Applied GAPS transformation to mesh {i}")
     
     return transformed_meshes
+
+
+def extract_transformation_from_meshes(original_mesh: trimesh.Trimesh, aligned_mesh: trimesh.Trimesh) -> Tuple[np.ndarray, float]:
+    """
+    Extract transformation matrix and scale factor from original mesh to aligned mesh
+    
+    Args:
+        original_mesh: Original mesh (before alignment)
+        aligned_mesh: Aligned mesh (after alignment)
+        
+    Returns:
+        Tuple of (transformation_matrix, scale_factor)
+        transformation_matrix: 4x4 homogeneous transformation matrix
+        scale_factor: scale factor
+    """
+    try:
+        # Sample points from both meshes
+        num_samples = min(10000, len(original_mesh.vertices), len(aligned_mesh.vertices))
+        original_points = original_mesh.sample(num_samples)
+        aligned_points = aligned_mesh.sample(num_samples)
+        
+        # Use Umeyama algorithm to find transformation
+        s, R, t = _umeyama_similarity(original_points, aligned_points, with_scale=True)
+        
+        # Create 4x4 homogeneous transformation matrix
+        transformation_matrix = _to_homo_matrix(s, R, t)
+        
+        print(f"Extracted transformation: scale={s:.6f}, translation={t}")
+        print(f"Transformation matrix:\n{transformation_matrix}")
+        
+        return transformation_matrix, s
+        
+    except Exception as e:
+        print(f"Error extracting transformation from meshes: {e}")
+        # Return identity transformation as fallback
+        return np.eye(4), 1.0

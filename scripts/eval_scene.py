@@ -27,13 +27,20 @@ sys.path.append('/home/ran.ding/messy-kitchen/PartCrafter')
 from src.pipelines.pipeline_partcrafter import PartCrafterPipeline
 from src.utils.eval_utils import (
     setup_gaps_tools, compute_aligned_metrics, 
-    save_meshes_with_alignment
+    save_meshes_with_alignment, align_merged_meshes_with_gaps_and_get_transform,
+    apply_gaps_transformation_to_meshes
 )
 from src.utils.visualization_utils import (
     render_comparison_with_alignment, create_evaluation_visualizations,
     print_evaluation_summary, print_case_results
 )
+from src.utils.image_utils import prepare_image
+from src.models.briarmbg import BriaRMBG
+
 from huggingface_hub import snapshot_download
+from accelerate.utils import set_seed
+
+MAX_NUM_PARTS = 16
 
 class PartCrafterEvaluator:
     def __init__(self, 
@@ -54,13 +61,24 @@ class PartCrafterEvaluator:
         self.dtype = dtype
         self.build_gaps = build_gaps
         
-        # Download and load model
+        # Download and load model - exactly match inference_partcrafter.py
         print(f"Downloading model weights to: {model_path}")
-        snapshot_download(repo_id="wgsxm/PartCrafter-Scene", local_dir=model_path)
+        snapshot_download(repo_id="wgsxm/PartCrafter", local_dir=model_path)
+        
+        # Download RMBG weights - exactly match inference_partcrafter.py
+        rmbg_weights_dir = "pretrained_weights/RMBG-1.4"
+        snapshot_download(repo_id="briaai/RMBG-1.4", local_dir=rmbg_weights_dir)
+        
+        # init rmbg model for background removal - exactly match inference_partcrafter.py
+        self.rmbg_net = BriaRMBG.from_pretrained(rmbg_weights_dir).to(device)
+        self.rmbg_net.eval()
         
         print("Loading PartCrafter model...")
         self.pipeline = PartCrafterPipeline.from_pretrained(model_path).to(device, dtype)
         print("Model loading completed!")
+        
+        # Set seed for reproducibility - same as inference_partcrafter.py
+        set_seed(0)
         
         # Setup GAPS if requested
         if self.build_gaps:
@@ -134,27 +152,33 @@ class PartCrafterEvaluator:
         return exists, mesh_dir, pred_meshes, gt_meshes
 
     
+    @torch.no_grad()
     def run_inference(self, 
                      image_path: str, 
                      num_parts: int,
                      seed: int = 0,
-                     num_tokens: int = 2048,
+                     num_tokens: int = 1024,
                      num_inference_steps: int = 50,
-                     guidance_scale: float = 7.0) -> Tuple[List[trimesh.Trimesh], Image.Image]:
+                     guidance_scale: float = 7.0,
+                     max_num_expanded_coords: int = 1e9,
+                     use_flash_decoder: bool = False,
+                     rmbg: bool = False,
+                     rmbg_net: Any = None,
+                     dtype: torch.dtype = torch.float16,
+                     device: str = "cuda") -> Tuple[List[trimesh.Trimesh], Image.Image]:
         """
-        Run PartCrafter inference
+        Run PartCrafter inference - exactly matching inference_partcrafter.py run_triposg function
         
         Returns:
             generated_meshes: List of generated meshes
             processed_image: Processed input image
         """
-        try:
+        # Exactly match inference_partcrafter.py run_triposg function
+        assert 1 <= num_parts <= MAX_NUM_PARTS, f"num_parts must be in [1, {MAX_NUM_PARTS}]"
+        if rmbg:
+            img_pil = prepare_image(image_path, bg_color=np.array([1.0, 1.0, 1.0]), rmbg_net=rmbg_net)
+        else:
             img_pil = Image.open(image_path)
-        except FileNotFoundError:
-            print(f"Warning: Image file {image_path} not found. Creating a dummy white image.")
-            # Create a dummy white image if the image file doesn't exist
-            img_pil = Image.new('RGB', (512, 512), color=(255, 255, 255))
-        
         start_time = time.time()
         outputs = self.pipeline(
             image=[img_pil] * num_parts,
@@ -163,18 +187,15 @@ class PartCrafterEvaluator:
             generator=torch.Generator(device=self.device).manual_seed(seed),
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
-            max_num_expanded_coords=int(1e9),
-            use_flash_decoder=False,
+            max_num_expanded_coords=max_num_expanded_coords,
+            use_flash_decoder=use_flash_decoder,
         ).meshes
-        
         end_time = time.time()
-        print(f"Inference time: {end_time - start_time:.2f} seconds")
-        
-        # Handle None outputs
+        print(f"Time elapsed: {end_time - start_time:.2f} seconds")
         for i in range(len(outputs)):
             if outputs[i] is None:
+                # If the generated mesh is None (decoding error), use a dummy mesh
                 outputs[i] = trimesh.Trimesh(vertices=[[0, 0, 0]], faces=[[0, 0, 0]])
-        
         return outputs, img_pil
     
 
@@ -190,7 +211,8 @@ class PartCrafterEvaluator:
                            output_dir: str,
                            num_samples: int = 10000,
                            use_existing_results: bool = True,
-                           force_inference: bool = False) -> Dict[str, Any]:
+                           force_inference: bool = False,
+                           inference_args: Dict = None) -> Dict[str, Any]:
         """
         Evaluate a single test case
         
@@ -206,16 +228,8 @@ class PartCrafterEvaluator:
             
             if has_existing and use_existing_results and not force_inference:
                 # Use existing results - skip inference but still need GT mesh for metrics
-                print(f"Using existing results for case: {case_name}")
-                try:
-                    input_image = Image.open(config['image_path'])
-                except FileNotFoundError:
-                    print(f"Warning: Image file {config['image_path']} not found. Creating a dummy white image.")
-                    input_image = Image.new('RGB', (512, 512), color=(255, 255, 255))
-                
                 # Load GT mesh from original path for metrics computation
                 gt_mesh = self.load_gt_mesh(config['mesh_path'])
-                
                 print(f"Loaded {len(pred_meshes)} predicted meshes and {len(gt_meshes)} GT meshes from existing results")
             else:
                 # Load GT mesh and run inference
@@ -226,18 +240,26 @@ class PartCrafterEvaluator:
                 
                 gt_mesh = self.load_gt_mesh(config['mesh_path'])
                 
-                # Run PartCrafter inference
+                # Create output directory for this case
+                case_output_dir = os.path.join(output_dir, case_name)
+                os.makedirs(case_output_dir, exist_ok=True)
+                
+                # Run PartCrafter inference with exact same parameters as inference_partcrafter.py
                 pred_meshes, input_image = self.run_inference(
                     image_path=config['image_path'],
                     num_parts=config['num_parts'],
-                    seed=0
+                    seed=inference_args.get('seed', 0) if inference_args else 0,
+                    num_tokens=inference_args.get('num_tokens', 1024) if inference_args else 1024,
+                    num_inference_steps=inference_args.get('num_inference_steps', 50) if inference_args else 50,
+                    guidance_scale=inference_args.get('guidance_scale', 7.0) if inference_args else 7.0,
+                    max_num_expanded_coords=inference_args.get('max_num_expanded_coords', int(1e9)) if inference_args else int(1e9),
+                    use_flash_decoder=inference_args.get('use_flash_decoder', False) if inference_args else False,
+                    rmbg=inference_args.get('rmbg', False) if inference_args else False,
+                    rmbg_net=self.rmbg_net,
+                    dtype=self.dtype,
+                    device=self.device
                 )
-                pred_meshes[0].export("pred_part_00.glb")
-                
-                # Save PartCrafter meshes as GLB files
-                # mesh_dir = save_meshes_with_alignment(
-                #     pred_meshes, gt_mesh, output_dir, case_name
-                # )
+                pred_meshes[0].export(os.path.join(case_output_dir, "pred_part_00.glb"))
             
             # Always compute metrics with alignment (whether using existing results or not)
             print(f"Computing metrics with alignment for {len(pred_meshes)} predicted meshes...")
@@ -251,7 +273,7 @@ class PartCrafterEvaluator:
                 else:
                     gt_meshes = []
             
-            # Create output directory for this case
+            # Create output directory for this case (if not already created)
             case_output_dir = os.path.join(output_dir, case_name)
             os.makedirs(case_output_dir, exist_ok=True)
             
@@ -261,63 +283,66 @@ class PartCrafterEvaluator:
             aligned_pred_path = os.path.join(case_output_dir, "aligned_pred_merged.ply")
             
             # Merge and save meshes
-            if pred_meshes:
-                pred_merged = trimesh.util.concatenate(pred_meshes)
-                pred_merged.export(pred_merged_path)
-            else:
-                print("Warning: No predicted meshes to align")
-                pred_merged = None
-            
-            if gt_meshes:
-                gt_merged = trimesh.util.concatenate(gt_meshes)
-                gt_merged.export(gt_merged_path)
-            else:
-                print("Warning: No GT meshes to align")
-                gt_merged = None
-            
+            assert pred_meshes is not None
+            assert gt_meshes is not None
+            pred_merged = trimesh.util.concatenate(pred_meshes)
+            pred_merged.export(pred_merged_path)
+       
+            gt_merged = trimesh.util.concatenate(gt_meshes)
+            gt_merged.export(gt_merged_path)
+    
             # Run GAPS alignment if both meshes exist
-            if pred_merged is not None and gt_merged is not None:
-                gaps_path = "submodules/SSR-code/external/ldif/gaps/bin/x86_64/mshalign"
-                cmd = f"{gaps_path} {pred_merged_path} {gt_merged_path} {aligned_pred_path}"
-                print(f"Running GAPS alignment: {cmd}")
+            print("Running GAPS alignment with transformation extraction...")
                 
-                try:
-                    subprocess.check_output(cmd, shell=True, timeout=120)
-                    if os.path.exists(aligned_pred_path):
-                        aligned_pred_merged = trimesh.load(aligned_pred_path)
-                        print(f"GAPS alignment successful")
-                        # Split aligned mesh back into individual parts for per-object metrics
-                        # For now, use the aligned merged mesh as a single object
-                        aligned_pred_meshes = [aligned_pred_merged]
-                    else:
-                        print(f"GAPS alignment failed - output file not found")
-                        aligned_pred_meshes = pred_meshes
-                except Exception as e:
-                    print(f"GAPS alignment failed: {e}")
-                    aligned_pred_meshes = pred_meshes
-            else:
-                aligned_pred_meshes = pred_meshes
+            # Get aligned merged mesh, transformation matrix, and scale factor
+            gt_merged_aligned, aligned_pred_merged, transformation_matrix, scale_factor = align_merged_meshes_with_gaps_and_get_transform(gt_merged, pred_merged)
+                    
+            aligned_pred_merged.export(os.path.join(case_output_dir, "aligned_pred_merged.glb"))
+            gt_merged.export(os.path.join(case_output_dir, "gt_merged.glb"))
+
+            print(f"GAPS alignment successful")
+            print(f"Transformation matrix shape: {transformation_matrix.shape}")
+            print(f"Scale factor: {scale_factor}")
+            print(f"Transformation matrix:\n{transformation_matrix}")
+
+            assert np.allclose(transformation_matrix, np.eye(4)) != True
+            assert scale_factor != 1.0 
             
-            # gt_meshes[0].export("gt_part_00.glb")
-            # aligned_pred_meshes[0].export("pred_part_00.glb")
+            # Apply the transformation to individual predicted meshes
+            print(f"Applying transformation to {len(pred_meshes)} individual predicted meshes...")
+            aligned_pred_meshes = apply_gaps_transformation_to_meshes(pred_meshes, transformation_matrix)
+            print(f"Successfully applied transformation to {len(aligned_pred_meshes)} individual predicted meshes")
             
-            # Create aligned scenes for visualization
+            # Save transformation info for debugging
+            transformation_info = {
+                'transformation_matrix': transformation_matrix.tolist(),
+                'scale_factor': scale_factor,
+                'matrix_shape': transformation_matrix.shape,
+                'is_identity': bool(np.allclose(transformation_matrix, np.eye(4)))
+            }
+                    
+            # Save transformation info to file
+            transformation_path = os.path.join(case_output_dir, "transformation_info.json")
+            with open(transformation_path, 'w') as f:
+                json.dump(transformation_info, f, indent=2)
+            print(f"Transformation info saved to: {transformation_path}")
+       
             aligned_gt_scene = trimesh.Scene(gt_meshes)
             aligned_pred_scene = trimesh.Scene(aligned_pred_meshes)
             
+            print(f"Computing metrics with {len(gt_meshes)} GT meshes and {len(aligned_pred_meshes)} aligned predicted meshes")
             metrics = compute_aligned_metrics(gt_meshes, aligned_pred_meshes, num_samples)
+
+            # Save some debug meshes
+            if aligned_pred_meshes and len(aligned_pred_meshes) > 0:
+                aligned_pred_meshes[0].export(os.path.join(case_output_dir, "pred_part_00.glb"))
+            if gt_merged is not None:
+                gt_merged.export(os.path.join(case_output_dir, "gt_merged.glb"))
             
             # Add aligned scenes to metrics for visualization
             metrics['aligned_gt_scene'] = aligned_gt_scene
             metrics['aligned_pred_scene'] = aligned_pred_scene
             
-            # Render comparison (temporarily disabled)
-            # aligned_gt_scene = metrics.get('aligned_gt_scene')
-            # aligned_pred_scene = metrics.get('aligned_pred_scene')
-            # comparison_path = render_comparison_with_alignment(
-            #     gt_mesh, pred_meshes, input_image, output_dir, case_name,
-            #     aligned_gt_scene, aligned_pred_scene
-            # )
             comparison_path = None
             
             # Save alignment results if not using existing results or if alignment results don't exist
@@ -361,7 +386,8 @@ class PartCrafterEvaluator:
                         output_dir: str,
                         num_samples: int = 10000,
                         use_existing_results: bool = True,
-                        force_inference: bool = False) -> Dict[str, Any]:
+                        force_inference: bool = False,
+                        inference_args: Dict = None) -> Dict[str, Any]:
         """
         Evaluate the entire dataset
         
@@ -382,7 +408,7 @@ class PartCrafterEvaluator:
         for config in tqdm(configs, desc="Evaluation progress"):
             result = self.evaluate_single_case(
                 config, output_dir, num_samples, 
-                use_existing_results, force_inference
+                use_existing_results, force_inference, inference_args
             )
             results.append(result)
         
@@ -483,34 +509,54 @@ def save_meshes_standalone(pred_meshes, gt_mesh, output_path, case_name="test_ca
         output_path: Directory to save the GLB files
         case_name: Name for the case (used in file naming)
     """
-    evaluator = PartCrafterEvaluator()
-    mesh_dir = evaluator.save_meshes_as_glb(pred_meshes, gt_mesh, output_path, case_name)
-    print(f"All meshes saved to: {mesh_dir}")
-    return mesh_dir
+    # Create output directory
+    os.makedirs(output_path, exist_ok=True)
+    
+    # Save individual predicted meshes
+    for i, mesh in enumerate(pred_meshes):
+        mesh.export(os.path.join(output_path, f"pred_part_{i:02d}.glb"))
+    
+    # Save merged predicted mesh
+    if pred_meshes:
+        merged_mesh = trimesh.util.concatenate(pred_meshes)
+        merged_mesh.export(os.path.join(output_path, "pred_merged.glb"))
+    
+    # Save GT mesh
+    if isinstance(gt_mesh, trimesh.Scene):
+        gt_mesh.export(os.path.join(output_path, "gt_merged.glb"))
+    elif isinstance(gt_mesh, trimesh.Trimesh):
+        gt_mesh.export(os.path.join(output_path, "gt_merged.glb"))
+    
+    print(f"All meshes saved to: {output_path}")
+    return output_path
 
 def main():
     parser = argparse.ArgumentParser(description='PartCrafter large-scale evaluation script')
     parser.add_argument('--config_path', type=str, 
-                       default='data/preprocessed_data_messy_kitchen_scenes_test/messy_kitchen_configs.json',
-                    # default='data/preprocessed_data_scenes_objects_demo_test/objects_demo_configs.json',
+                       default='data/preprocessed_data_scenes_objects_demo_test/objects_demo_configs.json',
                        help='Test configuration file path')
     parser.add_argument('--output_dir', type=str, 
-                       default='results/evaluation_messy_kitchen',
+                       default='./results',
                        help='Output directory')
     parser.add_argument('--model_path', type=str,
-                       default='pretrained_weights/PartCrafter-Scene',
-                    # default = 'pretrained_weights/PartCrafter',
-                    # default='runs/messy_kitchen/part_1/messy_kitchen_part1_mp8_nt512/checkpoints/017000',
+                       default='pretrained_weights/PartCrafter',
                        help='Model weights path')
     parser.add_argument('--device', type=str, default='cuda', help='Computing device')
     parser.add_argument('--num_samples', type=int, default=10000, help='Number of evaluation sample points')
     parser.add_argument('--seed', type=int, default=0, help='Random seed')
+    parser.add_argument('--num_tokens', type=int, default=1024, help='Number of tokens for generation')
+    parser.add_argument('--num_inference_steps', type=int, default=50, help='Number of inference steps')
+    parser.add_argument('--guidance_scale', type=float, default=7.0, help='Guidance scale for generation')
+    parser.add_argument('--max_num_expanded_coords', type=int, default=1e9, help='Maximum number of expanded coordinates')
+    parser.add_argument('--use_flash_decoder', action='store_true', help='Use flash decoder')
+    parser.add_argument('--rmbg', action='store_true', help='Use background removal')
     parser.add_argument('--build_gaps', action='store_true', default=True,
                        help='Setup GAPS tools for evaluation (default: True, assumes GAPS is pre-installed)')
     parser.add_argument('--use_existing_results', action='store_true', default=True,
                        help='Use existing prediction results if available (default: True)')
-    parser.add_argument('--force_inference', action='store_true', default=False,
+    parser.add_argument('--force_inference', action='store_true', default=True,
                        help='Force running inference even if existing results are found')
+
     
     args = parser.parse_args()
     
@@ -526,13 +572,25 @@ def main():
         build_gaps=args.build_gaps
     )
     
+    # Prepare inference arguments
+    inference_args = {
+        'seed': args.seed,
+        'num_tokens': args.num_tokens,
+        'num_inference_steps': args.num_inference_steps,
+        'guidance_scale': args.guidance_scale,
+        'max_num_expanded_coords': args.max_num_expanded_coords,
+        'use_flash_decoder': args.use_flash_decoder,
+        'rmbg': args.rmbg
+    }
+    
     # Run evaluation
     results = evaluator.evaluate_dataset(
         config_path=args.config_path,
         output_dir=args.output_dir,
         num_samples=args.num_samples,
         use_existing_results=args.use_existing_results,
-        force_inference=args.force_inference
+        force_inference=args.force_inference,
+        inference_args=inference_args
     )
     
     print(f"\nEvaluation completed! Results saved to: {args.output_dir}")

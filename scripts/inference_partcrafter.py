@@ -66,8 +66,8 @@ if __name__ == "__main__":
     dtype = torch.float16
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--image_path", type=str, required=True)
-    parser.add_argument("--num_parts", type=int, required=True, help="number of parts to generate")
+    parser.add_argument("--image_path", type=str, default="data/preprocessed_data/scissors/rendering.png")
+    parser.add_argument("--num_parts", type=int, default=2,  help="number of parts to generate")
     parser.add_argument("--output_dir", type=str, default="./results")
     parser.add_argument("--tag", type=str, default=None)
     parser.add_argument("--seed", type=int, default=0)

@@ -71,6 +71,11 @@ python scripts/inference_partcrafter.py \
 python scripts/inference_partcrafter.py \
   --image_path assets/obj1.png \
   --num_parts 2 --tag obj1 --render
+
+
+python scripts/inference_partcrafter.py \
+  --image_path data/preprocessed_data/scissors/rendering.png \
+  --num_parts 2 --tag obj1 
 ```
 The required model weights will be automatically downloaded:
 - PartCrafter model from [wgsxm/PartCrafter](https://huggingface.co/wgsxm/PartCrafter) → pretrained_weights/PartCrafter
