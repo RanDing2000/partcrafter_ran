@@ -11,3 +11,6 @@ data
 submodules
 Notes
 assets
+*.glb
+*.ply
+assets/

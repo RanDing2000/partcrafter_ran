@@ -112,22 +112,22 @@ def test_render_comparison(original_glb, fixed_glb, output_dir="render_compariso
     return output_dir
 
 def main():
-    # 修复messy_kitchen GLB文件
-    messy_kitchen_glb = "assets/messy_kitchen/5f8584bf10dd4bbb9651142fd37e73fa_combined.glb"
+    # 修复指定的GLB文件
+    target_glb = "/home/ran.ding/messy-kitchen/PartCrafter/assets/messy_kitchen/884998eb9b7943e79fbdddc8f1eaca16_combined.glb"
     
-    if os.path.exists(messy_kitchen_glb):
+    if os.path.exists(target_glb):
         # 修复GLB文件
-        fixed_glb = fix_glb_colors(messy_kitchen_glb)
+        fixed_glb = fix_glb_colors(target_glb)
         
         # 测试渲染对比
-        test_render_comparison(messy_kitchen_glb, fixed_glb)
+        test_render_comparison(target_glb, fixed_glb)
         
         print(f"\n=== 修复完成 ===")
-        print(f"原始文件: {messy_kitchen_glb}")
+        print(f"原始文件: {target_glb}")
         print(f"修复文件: {fixed_glb}")
         print(f"请使用修复后的GLB文件进行渲染")
     else:
-        print(f"文件不存在: {messy_kitchen_glb}")
+        print(f"文件不存在: {target_glb}")
 
 if __name__ == "__main__":
     main()

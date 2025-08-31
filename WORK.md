@@ -251,6 +251,9 @@ python datasets/preprocess/preprocess_messy_kitchen.py --input datasets/messy_ki
 ```
 python datasets/preprocess/preprocess_messy_kitchen.py --input datasets/messy_kitchen_scenes_part2 --output data/preprocessed_data_messy_kitchen_scenes_part2
 ```
+```
+python datasets/preprocess/preprocess_messy_kitchen.py --input datasets/messy_kitchen_test --output data/preprocessed_data_messy_kitchen_scenes_test
+```
 
 **Key differences from regular object preprocessing:**
 - No background removal step (step 3 uses `resize_only.py` instead of `rmbg.py`)
@@ -262,3 +265,113 @@ python datasets/preprocess/preprocess_messy_kitchen.py --input datasets/messy_ki
 ```
 CUDA_VISIBLE_DEVICES=2 accelerate launch --num_machines 1 --num_processes 1 --machine_rank 0 src/train_partcrafter.py --pin_memory --allow_tf32 --config configs/messy_kitchen/part_1/mp8_nt512.yaml --use_ema --gradient_accumulation_steps 4 --output_dir runs/messy_kitchen/part_1 --tag messy_kitchen_part1_mp8_nt512
 ```
+
+## Attention Visualization with PartCrafter
+
+### Installation
+First, install the attention-map-diffusers library:
+```bash
+cd submodules/attention-map-diffusers
+pip install -e .
+```
+
+### Testing Attention Integration
+Test the attention visualization integration:
+```bash
+python scripts/test_attention_integration.py
+```
+
+This will:
+- Check if attention-map-diffusers is properly installed
+- Analyze PartCrafter's transformer architecture
+- Test attention hook registration
+- Run a simple inference test
+
+### Using Attention Visualization in Inference
+
+#### Basic Usage
+Generate 3D parts with attention visualization:
+```bash
+python scripts/inference_partcrafter_with_attention.py \
+  --image_path assets/images/np3_2f6ab901c5a84ed6bbdf85a67b22a2ee.png \
+  --num_parts 3 \
+  --attention_viz \
+  --output_dir ./results \
+  --tag robot_with_attention \
+  --render
+```
+
+#### Scene Generation with Attention
+Generate 3D scene with attention visualization:
+```bash
+python scripts/inference_partcrafter_with_attention.py \
+  --image_path assets/images_scene/np6_0192a842-531c-419a-923e-28db4add8656_DiningRoom-31158.png \
+  --num_parts 6 \
+  --attention_viz \
+  --output_dir ./results \
+  --tag dining_room_with_attention \
+  --render
+```
+
+#### Custom Attention Output Directory
+```bash
+python scripts/inference_partcrafter_with_attention.py \
+  --image_path path/to/your/image.jpg \
+  --num_parts 4 \
+  --attention_viz \
+  --attention_viz_dir ./custom_attention_output \
+  --output_dir ./results \
+  --tag custom_case
+```
+
+### Output Structure
+With attention visualization enabled, the output structure will be:
+```
+results/
+└── robot_with_attention/
+    ├── part_00.glb              # Generated part meshes
+    ├── part_01.glb
+    ├── part_02.glb
+    ├── object.glb               # Merged mesh
+    ├── rendering.png            # Rendered image
+    ├── rendering.gif            # Rendered animation
+    └── attention_maps/          # Attention visualizations
+        ├── timestep_0/
+        │   ├── layer_blocks.0.attn2/
+        │   │   ├── attention_weights.npy
+        │   │   └── attention_heatmap.png
+        │   ├── layer_blocks.1.attn2/
+        │   │   ├── attention_weights.npy
+        │   │   └── attention_heatmap.png
+        │   └── ...
+        ├── timestep_1/
+        │   └── ...
+        └── ...
+```
+
+### Attention Map Analysis
+- **attention_weights.npy**: Raw attention weight tensors (shape: batch_size, num_heads, query_length, key_length)
+- **attention_heatmap.png**: Visual heatmap showing attention patterns
+- **Cross attention layers**: Only `attn2` layers are captured (cross-attention between image features and 3D tokens)
+
+### Memory Optimization
+For memory-constrained environments:
+```bash
+# Reduce inference steps
+--num_inference_steps 20
+
+# Reduce token count
+--num_tokens 1024
+
+# Use fewer parts
+--num_parts 2
+```
+
+### Troubleshooting
+If attention maps are not captured:
+1. Check if attention-map-diffusers is properly installed
+2. Run the test script to verify integration
+3. Check GPU memory availability
+4. Verify PartCrafter model architecture compatibility
+
+For detailed documentation, see `scripts/README_attention_integration.md`.

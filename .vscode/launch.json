@@ -23,6 +23,46 @@
             "justMyCode": false
         },
         {
+            "name": "PartCrafter Eval (GPU 2)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/eval.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+              "CUDA_VISIBLE_DEVICES": "2"
+            },
+            "args": [
+              // 在这里填你的评测参数，例如：
+              // "--config", "configs/your_eval.yaml",
+              // "--ckpt", "path/to/checkpoint.pt",
+              // "--output_dir", "runs/eval_gpu2"
+            ],
+            "justMyCode": false
+        },
+
+        {
+            "name": "PartCrafter Inference With Attention",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/inference_partcrafter_with_attention.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "6"
+            },
+            "args": [
+                "--image_path", "assets/images_scene/np6_0192a842-531c-419a-923e-28db4add8656_DiningRoom-31158.png",
+                "--num_parts", "6",
+                "--attention_viz",
+                "--output_dir", "./results",
+                "--tag", "dining_room_with_attention",
+                "--render"
+            ],
+            "justMyCode": false
+        },
+        
+        {
             "name": "PartCrafter MessyKitchen Training",
             "type": "python",
             "request": "launch",
